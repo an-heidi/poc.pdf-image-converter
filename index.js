@@ -1,57 +1,54 @@
 const express = require('express');
 const fileUpload = require('express-fileupload');
-const { pdfToPng } = require('pdf-to-png-converter');
 const fs = require('fs');
 const path = require('path');
+const { createCanvas } = require('canvas');
+const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
 
 const app = express();
 const PORT = 3000;
 
-// Middleware
-app.use(fileUpload());
-app.use(express.json());
-
-// Ensure output folder exists
 const outputDir = path.join(__dirname, 'output');
 if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir);
 }
 
+app.use(fileUpload());
+
 app.post('/upload', async (req, res) => {
     if (!req.files || !req.files.media) {
-        return res.status(400).send('No files were uploaded.');
+        return res.status(400).send('No files uploaded.');
     }
 
     const files = Array.isArray(req.files.media) ? req.files.media : [req.files.media];
-    const results = [];
+    const resultImages = [];
 
     try {
         for (const file of files) {
-            if (file.mimetype !== 'application/pdf') {
-                return res.status(400).send(`Unsupported file type: ${file.name}`);
-            }
+            const pdfDoc = await pdfjsLib.getDocument({ data: file.data }).promise;
+            const numPages = pdfDoc.numPages;
 
-            // Convert PDF buffer to PNGs
-            const pngPages = await fromBuffer(file.data, {
-                outputFileMask: `${path.parse(file.name).name}-%d`,
-                disableFontFace: true,
-                useSystemFonts: false,
-                viewportScale: 2.0,
-            });
+            for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+                const page = await pdfDoc.getPage(pageNum);
 
-            // Save PNGs to /output
-            for (let i = 0; i < pngPages.length; i++) {
-                const page = pngPages[i];
-                const outputPath = path.join(outputDir, `${path.parse(file.name).name}-page${i + 1}.png`);
-                fs.writeFileSync(outputPath, page.content);
-                results.push(outputPath);
+                const viewport = page.getViewport({ scale: 2.0 });
+                const canvas = createCanvas(viewport.width, viewport.height);
+                const context = canvas.getContext('2d');
+
+                await page.render({ canvasContext: context, viewport }).promise;
+
+                const buffer = canvas.toBuffer('image/png');
+                const fileName = `${path.parse(file.name).name}-page${pageNum}.png`;
+                const outputPath = path.join(outputDir, fileName);
+                fs.writeFileSync(outputPath, buffer);
+                resultImages.push(outputPath);
             }
         }
 
-        res.json({ message: 'Files processed', images: results });
+        res.json({ message: 'PDFs converted using pdf.js', images: resultImages });
     } catch (err) {
         console.error(err);
-        res.status(500).send('Error processing PDFs.');
+        res.status(500).send('Failed to convert PDFs.');
     }
 });
 

@@ -11,9 +11,10 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "canvas": "^3.1.0",
     "express": "^5.1.0",
     "express-fileupload": "^1.5.1",
     "nodemon": "^3.1.9",
-    "pdf-to-png-converter": "^3.6.5"
+    "pdfjs-dist": "^2.14.305"
   }
 }
