@@ -1,122 +1,47 @@
-import express from 'express';
-import fileUpload from 'express-fileupload';
-// import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
-import * as pdfjsLib from 'pdfjs-dist';
-import { createCanvas } from 'canvas';
-import fs from 'fs';
-import path from 'path';
+const express = require('express');
+const fileUpload = require('express-fileupload');
+const path = require('path');
+const fs = require('fs');
+const pdf2pic = require('pdf2pic');
 
 const app = express();
+app.use(fileUpload());
 
-// Middleware to handle file uploads
-app.use(fileUpload({
-    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
-    useTempFiles: false // Process in memory
-}));
-
-// Ensure output directory exists
-const outputDir = path.join(__dirname, 'output');
-if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir);
+if (!fs.existsSync('output')) {
+    fs.mkdirSync('output');
 }
 
-// Route to handle PDF to image conversion
 app.post('/convert', async (req, res) => {
-    try {
-        // Check if files were uploaded
-        if (!req.files || !req.files.media) {
-            return res.status(400).json({ error: 'No files uploaded' });
-        }
-
-        // Handle both single file and multiple files
-        const files = Array.isArray(req.files.media) ? req.files.media : [req.files.media];
-        const results = [];
-
-        // Process each PDF file
-        for (const file of files) {
-            // Validate file type
-            if (file.mimetype !== 'application/pdf') {
-                results.push({
-                    filename: file.name,
-                    status: 'error',
-                    message: 'File must be a PDF'
-                });
-                continue;
-            }
-
-            try {
-                // Convert buffer to Uint8Array for pdfjs
-                const data = new Uint8Array(file.data);
-
-                // Load PDF document in memory
-                const pdf = await pdfjsLib.getDocument({ data }).promise;
-                const numPages = pdf.numPages;
-                const pageResults = [];
-
-                // Process each page
-                for (let i = 1; i <= numPages; i++) {
-                    const page = await pdf.getPage(i);
-
-                    // Get viewport at 100% scale
-                    const viewport = page.getViewport({ scale: 1.0 });
-
-                    // Create canvas in memory
-                    const canvas = createCanvas(viewport.width, viewport.height);
-                    const context = canvas.getContext('2d');
-
-                    // Render PDF page to canvas
-                    await page.render({
-                        canvasContext: context,
-                        viewport: viewport
-                    }).promise;
-
-                    // Convert canvas to buffer
-                    const imageBuffer = canvas.toBuffer('image/png');
-
-                    // Generate output filename
-                    const outputFilename = `${path.parse(file.name).name}_page${i}.png`;
-                    const outputPath = path.join(outputDir, outputFilename);
-
-                    // Write image buffer to disk
-                    fs.writeFileSync(outputPath, imageBuffer);
-
-                    pageResults.push({
-                        page: i,
-                        outputPath: outputPath,
-                        filename: outputFilename
-                    });
-                }
-
-                results.push({
-                    filename: file.name,
-                    status: 'success',
-                    pages: pageResults
-                });
-
-            } catch (error) {
-                results.push({
-                    filename: file.name,
-                    status: 'error',
-                    message: error.message
-                });
-            }
-        }
-
-        res.json({
-            status: 'completed',
-            results: results
-        });
-
-    } catch (error) {
-        res.status(500).json({
-            error: 'Server error',
-            message: error.message
-        });
+    if (!req.files || !req.files.media) {
+        return res.status(400).send('No files uploaded.');
     }
+
+    const files = Array.isArray(req.files.media) ? req.files.media : [req.files.media];
+    for (const file of files) {
+        const pdfBuffer = file.data; // Access file data in memory
+        await processPDF(pdfBuffer, path.parse(file.name).name); // Process each PDF
+    }
+    res.send('Conversion completed.');
 });
 
-// Start server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+const processPDF = async (pdfBuffer, filename) => {
+    const options = {
+        density: 100, // Image quality
+        format: 'png', // Output format
+        width: 800, // Image width
+    };
+
+    const convert = new pdf2pic.fromBuffer(pdfBuffer, options); // Create converter instance
+    const pages = await convert.bulk(-1); // Convert all pages
+    const images = Object.values(pages); // Get images from conversion
+    console.log(`Converted ${images.length} pages from ${filename}.`);
+    // Save each image to /output folder
+    images.forEach((image, index) => {
+        const outputPath = path.join(__dirname, 'output', `${filename}_page${index + 1}.png`);
+        fs.writeFileSync(outputPath, image.buffer); // Write to disk for output
+    });
+};
+
+app.listen(3000, () => {
+    console.log('Server started on http://localhost:3000');
 });
