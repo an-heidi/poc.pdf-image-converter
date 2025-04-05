@@ -3,7 +3,7 @@ const fileUpload = require('express-fileupload');
 const fs = require('fs');
 const path = require('path');
 const { createCanvas } = require('canvas');
-const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
+const pdfjsLib = require('pdfjs-dist');
 
 const app = express();
 const PORT = 3000;
@@ -25,7 +25,8 @@ app.post('/upload', async (req, res) => {
 
     try {
         for (const file of files) {
-            const pdfDoc = await pdfjsLib.getDocument({ data: file.data }).promise;
+            const loadingTask = pdfjsLib.getDocument({ data: file.data });
+            const pdfDoc = await loadingTask.promise;
             const numPages = pdfDoc.numPages;
 
             for (let pageNum = 1; pageNum <= numPages; pageNum++) {
@@ -50,6 +51,15 @@ app.post('/upload', async (req, res) => {
         console.error(err);
         res.status(500).send('Failed to convert PDFs.');
     }
+});
+
+app.get('/', (req, res) => {
+    res.json({
+        message: 'Welcome to the PDF to Image Converter API',
+        endpoints: {
+            upload: '/upload (POST)',
+        },
+    });
 });
 
 app.listen(PORT, () => {
