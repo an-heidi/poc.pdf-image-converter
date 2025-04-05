@@ -2,8 +2,7 @@ const express = require('express');
 const fileUpload = require('express-fileupload');
 const fs = require('fs');
 const path = require('path');
-const { createCanvas } = require('canvas');
-const pdfjsLib = require('pdfjs-dist');
+const { fork } = require('child_process');
 
 const app = express();
 const PORT = 3000;
@@ -15,7 +14,7 @@ if (!fs.existsSync(outputDir)) {
 
 app.use(fileUpload());
 
-app.post('/upload', async (req, res) => {
+app.post('/upload', (req, res) => {
     if (!req.files || !req.files.media) {
         return res.status(400).send('No files uploaded.');
     }
@@ -23,35 +22,41 @@ app.post('/upload', async (req, res) => {
     const files = Array.isArray(req.files.media) ? req.files.media : [req.files.media];
     const resultImages = [];
 
-    try {
-        for (const file of files) {
-            const loadingTask = pdfjsLib.getDocument({ data: file.data });
-            const pdfDoc = await loadingTask.promise;
-            const numPages = pdfDoc.numPages;
+    // Start a child process for PDF conversion
+    const childProcess = fork(path.join(__dirname, 'convertPdfToImage.js'));
 
-            for (let pageNum = 1; pageNum <= numPages; pageNum++) {
-                const page = await pdfDoc.getPage(pageNum);
+    childProcess.on('message', (message) => {
+        if (message.type === 'imageBuffer') {
+            const { buffer, fileName } = message;
+            const outputPath = path.join(outputDir, fileName);
 
-                const viewport = page.getViewport({ scale: 2.0 });
-                const canvas = createCanvas(viewport.width, viewport.height);
-                const context = canvas.getContext('2d');
-
-                await page.render({ canvasContext: context, viewport }).promise;
-
-                const buffer = canvas.toBuffer('image/png');
-                const fileName = `${path.parse(file.name).name}-page${pageNum}.png`;
-                const outputPath = path.join(outputDir, fileName);
-                fs.writeFileSync(outputPath, buffer);
-                resultImages.push(outputPath);
-            }
+            // Save the image buffer to disk
+            fs.writeFileSync(outputPath, Buffer.from(buffer.data));
+            resultImages.push(outputPath);
+        } else if (message.type === 'done') {
+            res.json({ message: 'PDFs converted and saved successfully.', images: resultImages });
+            childProcess.send({ type: 'complete' });
         }
+    });
 
-        res.json({ message: 'PDFs converted using pdf.js', images: resultImages });
-    } catch (err) {
-        console.error(err);
+    childProcess.send({ files });
+
+    childProcess.on('error', (err) => {
+        console.error('Child process error:', err);
         res.status(500).send('Failed to convert PDFs.');
-    }
+    });
+
+    childProcess.on('exit', (code) => {
+        if (code !== 0) {
+            console.error(`Child process exited with code ${code}`);
+            res.status(500).send('Failed to convert PDFs.');
+        }else if (code === 0) {
+            console.log('Child process completed successfully');
+        }
+    });
+    console.log('main process completed');
 });
+
 
 app.get('/', (req, res) => {
     res.json({
