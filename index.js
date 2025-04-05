@@ -1,120 +1,122 @@
-const express = require('express');
-const fileUpload = require('express-fileupload');
-const path = require('path');
-const fs = require('fs');
-const { createCanvas } = require('canvas');
-const { v4: uuidv4 } = require('uuid');
+import express from 'express';
+import fileUpload from 'express-fileupload';
+// import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
+import * as pdfjsLib from 'pdfjs-dist';
+import { createCanvas } from 'canvas';
+import fs from 'fs';
+import path from 'path';
 
 const app = express();
-const port = 3000;
 
-// Create output directory if it doesn't exist
-const outputDir = path.join(__dirname, 'output');
-if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
-}
-
-// Middleware
-app.use(express.json());
+// Middleware to handle file uploads
 app.use(fileUpload({
-    useTempFiles: false, // Don't use temp files to keep everything in memory
     limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
+    useTempFiles: false // Process in memory
 }));
 
+// Ensure output directory exists
+const outputDir = path.join(__dirname, 'output');
+if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir);
+}
+
+// Route to handle PDF to image conversion
 app.post('/convert', async (req, res) => {
     try {
         // Check if files were uploaded
         if (!req.files || !req.files.media) {
-            return res.status(400).send('No files were uploaded.');
+            return res.status(400).json({ error: 'No files uploaded' });
         }
 
+        // Handle both single file and multiple files
         const files = Array.isArray(req.files.media) ? req.files.media : [req.files.media];
         const results = [];
 
-        // Process each file
+        // Process each PDF file
         for (const file of files) {
             // Validate file type
-            if (!file.mimetype.includes('pdf')) {
+            if (file.mimetype !== 'application/pdf') {
                 results.push({
                     filename: file.name,
-                    error: 'Not a PDF file'
+                    status: 'error',
+                    message: 'File must be a PDF'
                 });
                 continue;
             }
 
             try {
-                // Get file data as buffer
-                const pdfBuffer = file.data;
+                // Convert buffer to Uint8Array for pdfjs
+                const data = new Uint8Array(file.data);
 
-                // Process the PDF using pdf.js
-                const pdfjsLib = require('pdfjs-dist');
-
-                // Load the PDF document
-                const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(pdfBuffer) });
-                const pdfDocument = await loadingTask.promise;
-                const pageCount = pdfDocument.numPages;
-
-                const fileImages = [];
+                // Load PDF document in memory
+                const pdf = await pdfjsLib.getDocument({ data }).promise;
+                const numPages = pdf.numPages;
+                const pageResults = [];
 
                 // Process each page
-                for (let i = 1; i <= pageCount; i++) {
-                    const page = await pdfDocument.getPage(i);
-                    const viewport = page.getViewport({ scale: 2.0 }); // Higher scale for better quality
+                for (let i = 1; i <= numPages; i++) {
+                    const page = await pdf.getPage(i);
 
-                    // Create a canvas to render the PDF page
+                    // Get viewport at 100% scale
+                    const viewport = page.getViewport({ scale: 1.0 });
+
+                    // Create canvas in memory
                     const canvas = createCanvas(viewport.width, viewport.height);
                     const context = canvas.getContext('2d');
 
-                    // Render the page to the canvas
-                    const renderContext = {
+                    // Render PDF page to canvas
+                    await page.render({
                         canvasContext: context,
                         viewport: viewport
-                    };
+                    }).promise;
 
-                    await page.render(renderContext).promise;
+                    // Convert canvas to buffer
+                    const imageBuffer = canvas.toBuffer('image/png');
 
-                    // Convert canvas to PNG buffer
-                    const pngBuffer = canvas.toBuffer('image/png');
+                    // Generate output filename
+                    const outputFilename = `${path.parse(file.name).name}_page${i}.png`;
+                    const outputPath = path.join(outputDir, outputFilename);
 
-                    // Save the PNG to the output directory
-                    const imageName = `${path.parse(file.name).name}_page${i}_${uuidv4()}.png`;
-                    const outputPath = path.join(outputDir, imageName);
-                    await fs.promises.writeFile(outputPath, pngBuffer);
+                    // Write image buffer to disk
+                    fs.writeFileSync(outputPath, imageBuffer);
 
-                    fileImages.push({
+                    pageResults.push({
                         page: i,
-                        imagePath: outputPath
+                        outputPath: outputPath,
+                        filename: outputFilename
                     });
                 }
 
                 results.push({
                     filename: file.name,
-                    pages: pageCount,
-                    images: fileImages,
-                    success: true
+                    status: 'success',
+                    pages: pageResults
                 });
 
             } catch (error) {
-                console.error(`Error processing ${file.name}:`, error);
                 results.push({
                     filename: file.name,
-                    error: error.message,
-                    success: false
+                    status: 'error',
+                    message: error.message
                 });
             }
         }
 
         res.json({
-            message: 'Files processed',
-            results
+            status: 'completed',
+            results: results
         });
 
     } catch (error) {
-        console.error('Server error:', error);
-        res.status(500).send('Server error: ' + error.message);
+        res.status(500).json({
+            error: 'Server error',
+            message: error.message
+        });
     }
 });
 
-app.listen(port, () => {
-    console.log(`PDF to Image server running on port ${port}`);
+// Start server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
 });
