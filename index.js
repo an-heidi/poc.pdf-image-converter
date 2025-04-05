@@ -1,47 +1,60 @@
 const express = require('express');
 const fileUpload = require('express-fileupload');
-const path = require('path');
+const { pdfToPng } = require('pdf-to-png-converter');
 const fs = require('fs');
-const pdf2pic = require('pdf2pic');
+const path = require('path');
 
 const app = express();
-app.use(fileUpload());
+const PORT = 3000;
 
-if (!fs.existsSync('output')) {
-    fs.mkdirSync('output');
+// Middleware
+app.use(fileUpload());
+app.use(express.json());
+
+// Ensure output folder exists
+const outputDir = path.join(__dirname, 'output');
+if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir);
 }
 
-app.post('/convert', async (req, res) => {
+app.post('/upload', async (req, res) => {
     if (!req.files || !req.files.media) {
-        return res.status(400).send('No files uploaded.');
+        return res.status(400).send('No files were uploaded.');
     }
 
     const files = Array.isArray(req.files.media) ? req.files.media : [req.files.media];
-    for (const file of files) {
-        const pdfBuffer = file.data; // Access file data in memory
-        await processPDF(pdfBuffer, path.parse(file.name).name); // Process each PDF
+    const results = [];
+
+    try {
+        for (const file of files) {
+            if (file.mimetype !== 'application/pdf') {
+                return res.status(400).send(`Unsupported file type: ${file.name}`);
+            }
+
+            // Convert PDF buffer to PNGs
+            const pngPages = await fromBuffer(file.data, {
+                outputFileMask: `${path.parse(file.name).name}-%d`,
+                disableFontFace: true,
+                useSystemFonts: false,
+                viewportScale: 2.0,
+            });
+
+            // Save PNGs to /output
+            for (let i = 0; i < pngPages.length; i++) {
+                const page = pngPages[i];
+                const outputPath = path.join(outputDir, `${path.parse(file.name).name}-page${i + 1}.png`);
+                fs.writeFileSync(outputPath, page.content);
+                results.push(outputPath);
+            }
+        }
+
+        res.json({ message: 'Files processed', images: results });
+    } catch (err) {
+        console.error(err);
+        res.status(500).send('Error processing PDFs.');
     }
-    res.send('Conversion completed.');
 });
 
-const processPDF = async (pdfBuffer, filename) => {
-    const options = {
-        density: 100, // Image quality
-        format: 'png', // Output format
-        width: 800, // Image width
-    };
-
-    const convert = new pdf2pic.fromBuffer(pdfBuffer, options); // Create converter instance
-    const pages = await convert.bulk(-1); // Convert all pages
-    const images = Object.values(pages); // Get images from conversion
-    console.log(`Converted ${images.length} pages from ${filename}.`);
-    // Save each image to /output folder
-    images.forEach((image, index) => {
-        const outputPath = path.join(__dirname, 'output', `${filename}_page${index + 1}.png`);
-        fs.writeFileSync(outputPath, image.buffer); // Write to disk for output
-    });
-};
-
-app.listen(3000, () => {
-    console.log('Server started on http://localhost:3000');
+app.listen(PORT, () => {
+    console.log(`Server running at http://localhost:${PORT}`);
 });
